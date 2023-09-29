@@ -15,7 +15,7 @@ static_resources:
                     runtime: "envoy.wasm.runtime.v8"
                     code:
                       local:
-                        filename: "./examples/network/main.wasm"
+                        filename: "./main.wasm"
 
             - name: envoy.tcp_proxy
               typed_config:
@@ -73,7 +73,19 @@ static_resources:
                     socket_address:
                       address: 127.0.0.1
                       port_value: 8099
-
+    - name: web_log
+      connect_timeout: 0.25s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: mock_service
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 127.0.0.1
+                      port_value: 9999
 admin:
   access_log_path: "/dev/null"
   address:
