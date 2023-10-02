@@ -1,0 +1,37 @@
+// graph
+digraph {
+	graph [compound=true dpi=300 rankdir=LR style=rounded]
+	client [label=client]
+	// INBOUND [label=inbound]
+	// OUTBOUND [label=outbound]
+    wasm_log [label="data_collector"]
+	node [color="#E8CEB5" style=filled]
+	client -> "s_0filter chain No. 0wasm" [fontname="Hack Nerd Font Mono" fontsize="7pt" headlabel="0.0.0.0:18000"]
+    "s_0filter chain No. 0wasm" -> wasm_log
+    
+	// client -> "s_1filter chain No. 0http_connection_managerrouter" [fontname="Hack Nerd Font Mono" fontsize="8pt" headlabel="127.0.0.1:8099"]
+	subgraph cluster_envoy {
+		bgcolor="#F1F1F1" label=envoy
+		subgraph cluster_s_0 {
+			bgcolor="#FFF0C5" fontname="Hack Nerd Font Mono" fontsize="5pt" label="Listener: s_0" labeljust=r
+			subgraph "s_0filter chain No. 0" {
+				bgcolor="#C7DEF1" label="filter chain No. 0"
+				"s_0filter chain No. 0wasm" [label=wasm]
+				"s_0filter chain No. 0tcp_proxy" [label=tcp_proxy]
+				"s_0filter chain No. 0wasm" -> "s_0filter chain No. 0tcp_proxy"
+			}
+		}
+		// subgraph cluster_s_1 {
+		// 	bgcolor="#FFF0C5" fontname="Hack Nerd Font Mono" fontsize="5pt" label="Listener: s_1" labeljust=r
+		// 	subgraph "s_1filter chain No. 0" {
+		// 		bgcolor="#C7DEF1" label="filter chain No. 0"
+		// 		subgraph "cluster_s_1filter chain No. 0http_connection_manager" {
+		// 			label=http_connection_manager
+		// 			node [bgcolor="#E8CEB5"]
+		// 			"s_1filter chain No. 0http_connection_managerrouter" [label=router]
+		// 		}
+		// 	}
+		// }
+	}
+}
+
