@@ -15,6 +15,8 @@
 package main
 
 import (
+	"fmt"
+
 	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm"
 	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm/types"
 )
@@ -53,9 +55,47 @@ type networkContext struct {
 	counter proxywasm.MetricCounter
 }
 
+func httpCallResponseCallback(numHeaders, bodySize, numTrailers int) {
+	proxywasm.LogDebugf("httpCallResponseCallback. numHeaders: %v, bodySize: %v, numTrailers: %v", numHeaders, bodySize, numTrailers)
+	headers, err := proxywasm.GetHttpCallResponseHeaders()
+	if err != nil {
+		proxywasm.LogWarnf("Failed to get http call response headers. %v", err)
+		return
+	}
+	for _, header := range headers {
+		if header[0] == statusCodePseudoHeaderName {
+			proxywasm.LogDebugf("Got response status from trace server: %v", header[1])
+		}
+	}
+}
+
+var emptyTrailers = [][2]string{}
+
+const (
+	httpCallTimeoutMs = 15000
+)
+const (
+	tickMilliseconds           uint32 = 60000 // 1 Minute
+	statusCodePseudoHeaderName        = ":status"
+	contentTypeHeaderName             = "content-type"
+	defaultServiceMesh                = "istio"
+)
+
 // Override types.DefaultTcpContext.
 func (ctx *networkContext) OnNewConnection() types.Action {
 	proxywasm.LogInfo("new connection!")
+	hs := [][2]string{
+		{":method", "POST"}, {":authority", "tracing tool"}, {":path", "/"}, {"accept", "*/*"},
+	}
+	body := fmt.Sprintf(
+		`New connection`,
+	)
+
+	if _, err := proxywasm.DispatchHttpCall("web_log", hs, []byte(body), emptyTrailers, httpCallTimeoutMs,
+		httpCallResponseCallback); err != nil {
+		proxywasm.LogErrorf("Dispatch httpcall failed. %v", err)
+	}
+
 	return types.ActionContinue
 }
 
