@@ -152,8 +152,6 @@ func (ctx *pluginContext) OnPluginStart(_ int) types.OnPluginStartStatus {
 	return types.OnPluginStartStatusOK
 }
 
-
-
 /**
 * override
 */
@@ -235,6 +233,109 @@ func (ctx *TraceFilterContext) OnHttpRequestHeaders(numHeaders int, endOfStream 
 	return types.ActionContinue
 }
 
+
+func (ctx *TraceFilterContext) OnHttpRequestBody(bodySize int, endOfStream bool) types.Action {
+	proxywasm.LogDebugf("OnHttpRequestBody: contextID: %v. rootContextID: %v, endOfStream: %v", ctx.contextID, ctx.rootContextID, endOfStream)
+	if ctx.shouldShortCircuitOnBody(bodySize, ctx.Telemetry.Request.Common.TruncatedBody) {
+		return types.ActionContinue
+	}
+	ctx.totalRequestBodySize += bodySize
+	// if body size is too big, dont send it.
+	if ctx.totalRequestBodySize > MaxBodySize {
+		proxywasm.LogWarnf("Request body size has exceeded the limit of 1MB. Not sending")
+		ctx.Telemetry.Request.Common.TruncatedBody = true
+		// clear body
+		ctx.Telemetry.Request.Common.Body = ""
+		return types.ActionContinue
+	}
+	body, err := proxywasm.GetHttpRequestBody(0, bodySize)
+	if err != nil {
+		proxywasm.LogErrorf("Failed to get request body: %v", err)
+		ctx.skipStream = true
+		return types.ActionContinue
+	}
+	ctx.Telemetry.Request.Common.Body = ctx.Telemetry.Request.Common.Body + string(body)
+
+	return types.ActionContinue
+}
+
+/**
+ * override
+ */
+func (ctx *TraceFilterContext) OnHttpResponseHeaders(numHeaders int, endOfStream bool) types.Action {
+	proxywasm.LogDebugf("OnHttpResponseHeaders: contextID: %v. rootContextID: %v, endOfStream: %v, numHeaders: %v", ctx.contextID, ctx.rootContextID, endOfStream, numHeaders)
+	if ctx.skipStream {
+		return types.ActionContinue
+	}
+	var err error
+	// here we should have the upstream data (namespace)
+	ctx.Telemetry.DestinationNamespace, err = ctx.getDestinationNamespaceFn(ctx)
+	if err != nil {
+		proxywasm.LogInfof("Failed to get destination namespace: %v", err)
+	}
+	// if we did not fix the host name in OnHttpRequestHeaders,do it now with the namespace info
+	if !ctx.isHostFixed {
+		ctx.Telemetry.Request.Host, ctx.isHostFixed, err = fixHostname(ctx.Telemetry.Request.Host, ctx.Telemetry.DestinationNamespace)
+	}
+
+	// if !ctx.shouldTrace() {
+	// 	ctx.skipStream = true
+	// 	return types.ActionContinue
+	// }
+
+	headers, err := proxywasm.GetHttpResponseHeaders()
+	if err != nil {
+		proxywasm.LogErrorf("Failed to get response headers: %v", err)
+		ctx.skipStream = true
+		return types.ActionContinue
+	}
+
+	proxywasm.LogDebugf("Response headers: %v", headers)
+
+	var statusCode string
+	if ctx.Telemetry.Response.StatusCode == "" {
+		statusCode, err = proxywasm.GetHttpResponseHeader(statusCodePseudoHeaderName)
+		if err != nil {
+			proxywasm.LogErrorf("Failed to get status code: %v", err)
+		}
+		ctx.Telemetry.Response.StatusCode = statusCode
+	}
+
+	ctx.Telemetry.Response.Common.Headers = append(ctx.Telemetry.Response.Common.Headers, removeEnvoyPseudoHeaders(headers)...)
+
+	return types.ActionContinue
+}
+
+/**
+ * override
+ */
+func (ctx *TraceFilterContext) OnHttpResponseBody(bodySize int, endOfStream bool) types.Action {
+	proxywasm.LogDebugf("OnHttpResponseBody: contextID: %v. rootContextID: %v, endOfStream: %v", ctx.contextID, ctx.rootContextID, endOfStream)
+	if ctx.shouldShortCircuitOnBody(bodySize, ctx.Telemetry.Response.Common.TruncatedBody) {
+		return types.ActionContinue
+	}
+
+	ctx.totalResponseBodySize += bodySize
+	// if body size is too big, dont send it.
+	if ctx.totalResponseBodySize > MaxBodySize {
+		proxywasm.LogWarnf("Response body size has exceeded the limit of 1MB. Not sending")
+		ctx.Telemetry.Response.Common.TruncatedBody = true
+		// clear body
+		ctx.Telemetry.Response.Common.Body = ""
+		return types.ActionContinue
+	}
+
+	body, err := proxywasm.GetHttpResponseBody(0, bodySize)
+	if err != nil {
+		proxywasm.LogErrorf("Failed to get response body: %v", err)
+		ctx.skipStream = true
+		return types.ActionContinue
+	}
+	ctx.Telemetry.Response.Common.Body = ctx.Telemetry.Response.Common.Body + string(body)
+
+	return types.ActionContinue
+}
+
 func httpCallResponseCallback(numHeaders, bodySize, numTrailers int) {
 	proxywasm.LogDebugf("httpCallResponseCallback. numHeaders: %v, bodySize: %v, numTrailers: %v", numHeaders, bodySize, numTrailers)
 	headers, err := proxywasm.GetHttpCallResponseHeaders()
@@ -288,6 +389,20 @@ func (ctx *TraceFilterContext) OnHttpStreamDone() {
 	}
 }
 
+func (ctx *TraceFilterContext) shouldShortCircuitOnBody(bodySize int, truncatedBody bool) bool {
+	if ctx.skipStream {
+		return true
+	}
+	if bodySize == 0 {
+		return true
+	}
+	if truncatedBody {
+		return true
+	}
+
+	return false
+}
+
 func getPortFromAddress(address string) string {
 	spl := strings.Split(address, ":")
 	if len(spl) != 2 {
@@ -301,6 +416,7 @@ const jsonPayload string = `{"requestID":"%v","scheme":"%v","destinationAddress"
 
 const (
 	httpCallTimeoutMs = 15000
+    MaxBodySize = 1000 * 1000
 )
 
 var emptyTrailers = [][2]string{}
