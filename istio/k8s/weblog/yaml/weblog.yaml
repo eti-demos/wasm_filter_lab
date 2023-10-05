@@ -45,8 +45,8 @@ spec:
     spec:
       serviceAccountName: weblog
       containers:
-      - image: myhttpserver
-        name: httpbin
+      - image: ttl.sh/myhttpserver:1h
+        name: myhttpserver
         ports:
         - containerPort: 9999
-        imagePullPolicy: IfNotPresent
+        # imagePullPolicy: IfNotPresent
