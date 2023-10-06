@@ -4,39 +4,39 @@ metadata:
   name: trace-filter
   labels:
     # app: httpbin
-  namespace: istio-system
+  namespace: httpbin-ns
 spec:
   configPatches:
-    - applyTo: HTTP_FILTER
-      match:
-        context: SIDECAR_OUTBOUND
-        listener:
-          filterChain:
-            filter:
-              name: envoy.filters.network.http_connection_manager
-              subFilter:
-                name: envoy.filters.http.router
-      patch:
-        operation: INSERT_BEFORE
-        value:
-          name: envoy.filters.http.wasm
-          typed_config:
-            "@type": type.googleapis.com/udpa.type.v1.TypedStruct
-            type_url: type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm
-            value:
-              config:
-                name: trace-outbound-filter
-                root_id: trace-outbound-filter
-                # configuration:
-                #   "@type": "type.googleapis.com/google.protobuf.StringValue"
-                #   value: |
-                #     {{PLUGIN_CONFIG}}
-                vm_config:
-                  code:
-                    local:
-                      filename: "./api_wasm.wasm"
-                  runtime: "envoy.wasm.runtime.v8"
-                  vm_id: trace-outbound-filter
+    # - applyTo: HTTP_FILTER
+    #   match:
+    #     context: SIDECAR_OUTBOUND
+    #     listener:
+    #       filterChain:
+    #         filter:
+    #           name: envoy.filters.network.http_connection_manager
+    #           subFilter:
+    #             name: envoy.filters.http.router
+    #   patch:
+    #     operation: INSERT_BEFORE
+    #     value:
+    #       name: envoy.filters.http.wasm
+    #       typed_config:
+    #         "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+    #         type_url: type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm
+    #         value:
+    #           config:
+    #             name: trace-outbound-filter
+    #             root_id: trace-outbound-filter
+    #             # configuration:
+    #             #   "@type": "type.googleapis.com/google.protobuf.StringValue"
+    #             #   value: |
+    #             #     {{PLUGIN_CONFIG}}
+    #             vm_config:
+    #               code:
+    #                 local:
+    #                   filename: "./api_wasm.wasm"
+    #               runtime: "envoy.wasm.runtime.v8"
+    #               vm_id: trace-outbound-filter
     - applyTo: CLUSTER
       match:
         context: SIDECAR_OUTBOUND

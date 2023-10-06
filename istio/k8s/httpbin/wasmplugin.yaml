@@ -1,8 +1,8 @@
 apiVersion: extensions.istio.io/v1alpha1
 kind: WasmPlugin
 metadata:
-  name: helloworld-wasm
-  namespace: istio-system
+  name: api-wasm-filter
+  namespace: httpbin-ns
 spec:
   # selector:
   #   matchLabels:
