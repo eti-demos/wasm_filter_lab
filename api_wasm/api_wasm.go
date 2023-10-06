@@ -16,89 +16,89 @@
 package main
 
 import (
-    "encoding/base64"
-    "encoding/binary"
-    "fmt"
-    "net/url"
-    "strings"
-    "unsafe"
+	"encoding/base64"
+	"encoding/binary"
+	"fmt"
+	"net/url"
+	"strings"
+	"unsafe"
 
-    // "github.com/valyala/fastjson"
+	// "github.com/valyala/fastjson"
 
-    "github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm"
-    "github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm/types"
+	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm"
+	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm/types"
 )
 
 // This was taken from APIClarity generated telemetry client api.
 // We cant import this module from there since it includes package net which is not supported yet by tinygo.
 type Telemetry struct {
-    DestinationAddress   string    `json:"destinationAddress,omitempty"`
-    DestinationNamespace string    `json:"destinationNamespace,omitempty"`
-    Request              *Request  `json:"request,omitempty"`
-    RequestID            string    `json:"requestID,omitempty"`
-    Response             *Response `json:"response,omitempty"`
-    Scheme               string    `json:"scheme,omitempty"`
-    SourceAddress        string    `json:"sourceAddress,omitempty"`
+	DestinationAddress   string    `json:"destinationAddress,omitempty"`
+	DestinationNamespace string    `json:"destinationNamespace,omitempty"`
+	Request              *Request  `json:"request,omitempty"`
+	RequestID            string    `json:"requestID,omitempty"`
+	Response             *Response `json:"response,omitempty"`
+	Scheme               string    `json:"scheme,omitempty"`
+	SourceAddress        string    `json:"sourceAddress,omitempty"`
 }
 
 type Request struct {
-    Common *Common `json:"common,omitempty"`
-    Host   string  `json:"host,omitempty"`
-    Method string  `json:"method,omitempty"`
-    Path   string  `json:"path,omitempty"`
+	Common *Common `json:"common,omitempty"`
+	Host   string  `json:"host,omitempty"`
+	Method string  `json:"method,omitempty"`
+	Path   string  `json:"path,omitempty"`
 }
 
 type Response struct {
-    Common     *Common `json:"common,omitempty"`
-    StatusCode string  `json:"statusCode,omitempty"`
+	Common     *Common `json:"common,omitempty"`
+	StatusCode string  `json:"statusCode,omitempty"`
 }
 
 type Common struct {
-    TruncatedBody bool      `json:"TruncatedBody,omitempty"`
-    Body          string    `json:"body,omitempty"`
-    Headers       []*Header `json:"headers"`
-    Version       string    `json:"version,omitempty"`
-    Time          int64     `json:"time,omitempty"`
+	TruncatedBody bool      `json:"TruncatedBody,omitempty"`
+	Body          string    `json:"body,omitempty"`
+	Headers       []*Header `json:"headers"`
+	Version       string    `json:"version,omitempty"`
+	Time          int64     `json:"time,omitempty"`
 }
 
 type Header struct {
-    Key   string `json:"key,omitempty"`
-    Value string `json:"value,omitempty"`
+	Key   string `json:"key,omitempty"`
+	Value string `json:"value,omitempty"`
 }
 
 var nativeEndian binary.ByteOrder
 
 const (
-    tickMilliseconds           uint32 = 60000 // 1 Minute
-    statusCodePseudoHeaderName        = ":status"
-    contentTypeHeaderName             = "content-type"
-    defaultServiceMesh                = "istio"
+	tickMilliseconds           uint32 = 60000 // 1 Minute
+	statusCodePseudoHeaderName        = ":status"
+	contentTypeHeaderName             = "content-type"
+	defaultServiceMesh                = "istio"
 )
 
 func main() {
-    proxywasm.SetVMContext(&vmContext{})
+	proxywasm.SetVMContext(&vmContext{})
 }
 
 type vmContext struct {
-    types.DefaultVMContext
+	types.DefaultVMContext
 }
 
 func (*vmContext) NewPluginContext(_ uint32) types.PluginContext {
-    if err := setEndianness(); err != nil {
-            proxywasm.LogErrorf("Failed to set endianness: %v", err)
-    }
-    return &pluginContext{}
+	if err := setEndianness(); err != nil {
+		proxywasm.LogErrorf("Failed to set endianness: %v", err)
+	}
+	return &pluginContext{}
 }
 
 type pluginContext struct {
-    types.DefaultPluginContext
-    pluginConfig
-    getDestinationNamespaceFn func(ctx *TraceFilterContext) (string, error)
+	types.DefaultPluginContext
+	pluginConfig
+	getDestinationNamespaceFn func(ctx *TraceFilterContext) (string, error)
 }
 
 type pluginConfig struct {
-    serverAddress string // The server to which the traces will be sent
-    // traceSamplingEnabled bool
+	serverAddress string // The server to which the traces will be sent
+	// traceSamplingEnabled bool
 }
 
 func (ctx *pluginContext) NewHttpContext(contextID uint32) types.HttpContext {
@@ -106,8 +106,8 @@ func (ctx *pluginContext) NewHttpContext(contextID uint32) types.HttpContext {
 	proxywasm.LogInfof("Called new http context. contextID: %v", contextID)
 
 	return &TraceFilterContext{
-		contextID:                 contextID,
-		serverAddress:             ctx.serverAddress,
+		contextID:     contextID,
+		serverAddress: ctx.serverAddress,
 		// hostsToTrace:              ctx.hostsToTrace,
 		// traceSamplingEnabled:      ctx.traceSamplingEnabled,
 		getDestinationNamespaceFn: ctx.getDestinationNamespaceFn,
@@ -126,35 +126,34 @@ func (ctx *pluginContext) NewHttpContext(contextID uint32) types.HttpContext {
 	}
 }
 
-
 type TraceFilterContext struct {
-    types.DefaultHttpContext
-    totalRequestBodySize  int
-    totalResponseBodySize int
-    skipStream            bool
-    contextID             uint32
-    rootContextID         uint32
-    destinationPort       string
-    // The server to which the traces will be sent
-    serverAddress string
+	types.DefaultHttpContext
+	totalRequestBodySize  int
+	totalResponseBodySize int
+	skipStream            bool
+	contextID             uint32
+	rootContextID         uint32
+	destinationPort       string
+	// The server to which the traces will be sent
+	serverAddress string
 
-    Telemetry
+	Telemetry
 
-    // traceSamplingEnabled      bool
-    // hostsToTrace              map[string]struct{}
-    isHostFixed               bool
-    getDestinationNamespaceFn func(ctx *TraceFilterContext) (string, error)
+	// traceSamplingEnabled      bool
+	// hostsToTrace              map[string]struct{}
+	isHostFixed               bool
+	getDestinationNamespaceFn func(ctx *TraceFilterContext) (string, error)
 }
 
 func (ctx *pluginContext) OnPluginStart(_ int) types.OnPluginStartStatus {
-    ctx.pluginConfig = pluginConfig{serverAddress: "web_log"}
-    ctx.getDestinationNamespaceFn = getDestinationNamespace
+	ctx.pluginConfig = pluginConfig{serverAddress: "web_log"}
+	ctx.getDestinationNamespaceFn = getDestinationNamespace
 	return types.OnPluginStartStatusOK
 }
 
 /**
 * override
-*/
+ */
 func (ctx *TraceFilterContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) types.Action {
 	if ctx.skipStream {
 		return types.ActionContinue
@@ -232,7 +231,6 @@ func (ctx *TraceFilterContext) OnHttpRequestHeaders(numHeaders int, endOfStream 
 
 	return types.ActionContinue
 }
-
 
 func (ctx *TraceFilterContext) OnHttpRequestBody(bodySize int, endOfStream bool) types.Action {
 	proxywasm.LogDebugf("OnHttpRequestBody: contextID: %v. rootContextID: %v, endOfStream: %v", ctx.contextID, ctx.rootContextID, endOfStream)
@@ -416,7 +414,7 @@ const jsonPayload string = `{"requestID":"%v","scheme":"%v","destinationAddress"
 
 const (
 	httpCallTimeoutMs = 15000
-    MaxBodySize = 1000 * 1000
+	MaxBodySize       = 1000 * 1000
 )
 
 var emptyTrailers = [][2]string{}
