@@ -3,7 +3,7 @@
 #
 # Binaries for programs and plugins
 http.log
-main.wasm
+*.wasm
 *.exe
 *.exe~
 *.dll
