@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: httpbin-ns
+  labels:
+    app: httpbin
+  name: httpbin
+spec:
+  serviceAccountName: httpbin
+  containers:
+  - image: kennethreitz/httpbin
+    name: httpbin
+    ports:
+    - containerPort: 80
+  - name: istio-proxy
+    image: auto
+    volumeMounts:
+    - readOnly: true
+      mountPath: /opt/wasm
+      name: wasm-filter
+  volumes:
+  - name: wasm-filter
+    configMap:
+      name: wasm-filter
+

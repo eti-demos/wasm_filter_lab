@@ -23,7 +23,7 @@ import (
 	"strings"
 	"unsafe"
 
-	// "github.com/valyala/fastjson"
+	"github.com/valyala/fastjson"
 
 	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm"
 	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm/types"
@@ -93,23 +93,24 @@ func (*vmContext) NewPluginContext(_ uint32) types.PluginContext {
 type pluginContext struct {
 	types.DefaultPluginContext
 	pluginConfig
+	hostsToTrace              map[string]struct{}
 	getDestinationNamespaceFn func(ctx *TraceFilterContext) (string, error)
 }
 
 type pluginConfig struct {
-	serverAddress string // The server to which the traces will be sent
-	// traceSamplingEnabled bool
+	serverAddress        string // The server to which the traces will be sent
+	traceSamplingEnabled bool
+	serviceMesh          string
 }
 
 func (ctx *pluginContext) NewHttpContext(contextID uint32) types.HttpContext {
-	// proxywasm.LogDebugf("Called new http context. contextID: %v", contextID)
-	proxywasm.LogInfof("Called new http context. contextID: %v", contextID)
+	proxywasm.LogDebugf("Called new http context. contextID: %v", contextID)
 
 	return &TraceFilterContext{
-		contextID:     contextID,
-		serverAddress: ctx.serverAddress,
-		// hostsToTrace:              ctx.hostsToTrace,
-		// traceSamplingEnabled:      ctx.traceSamplingEnabled,
+		contextID:                 contextID,
+		serverAddress:             ctx.serverAddress,
+		hostsToTrace:              ctx.hostsToTrace,
+		traceSamplingEnabled:      ctx.traceSamplingEnabled,
 		getDestinationNamespaceFn: ctx.getDestinationNamespaceFn,
 		Telemetry: Telemetry{
 			Request: &Request{
@@ -139,20 +140,165 @@ type TraceFilterContext struct {
 
 	Telemetry
 
-	// traceSamplingEnabled      bool
-	// hostsToTrace              map[string]struct{}
+	traceSamplingEnabled      bool
+	hostsToTrace              map[string]struct{}
 	isHostFixed               bool
 	getDestinationNamespaceFn func(ctx *TraceFilterContext) (string, error)
 }
 
 func (ctx *pluginContext) OnPluginStart(_ int) types.OnPluginStartStatus {
-	ctx.pluginConfig = pluginConfig{serverAddress: "web_log"}
-	ctx.getDestinationNamespaceFn = getDestinationNamespace
+	ctx.pluginConfig = readPluginConfig()
+
+	if ctx.traceSamplingEnabled {
+		ctx.callGetHostsToTrace()
+		if err := proxywasm.SetTickPeriodMilliSeconds(tickMilliseconds); err != nil {
+			proxywasm.LogCriticalf("failed to set tick period: %v", err)
+			return types.OnPluginStartStatusFailed
+		}
+	}
+	switch ctx.pluginConfig.serviceMesh {
+	case "istio":
+		ctx.getDestinationNamespaceFn = getIstioDestinationNamespace
+	case "kuma":
+		ctx.getDestinationNamespaceFn = getKumaDestinationNamespace
+	default:
+		ctx.getDestinationNamespaceFn = getIstioDestinationNamespace
+	}
+
 	return types.OnPluginStartStatusOK
 }
 
+func readPluginConfig() pluginConfig {
+	ret := pluginConfig{
+		serverAddress:        "trace_analyzer",
+		traceSamplingEnabled: false,
+		serviceMesh:          defaultServiceMesh,
+	}
+
+	data, err := proxywasm.GetPluginConfiguration()
+	if err != nil {
+		proxywasm.LogWarnf("No plugin configuration. Will use defaults: %v", err)
+		return ret
+	}
+
+	var parser fastjson.Parser
+
+	parsedData, err := parser.Parse(string(data))
+	if err != nil {
+		proxywasm.LogWarnf("Failed to parse plugin configuration data. Will use defaults: %v", err)
+		return ret
+	}
+
+	ret.traceSamplingEnabled = string(parsedData.GetStringBytes("trace_sampling_enabled")) == "true"
+	proxywasm.LogDebugf("Trace sampling enabled = %v", ret.traceSamplingEnabled)
+
+	serviceMesh := string(parsedData.GetStringBytes("service_mesh"))
+	switch serviceMesh {
+	case "istio", "kuma":
+		ret.serviceMesh = serviceMesh
+	default:
+		proxywasm.LogWarnf("Service Mesh '%s' is not supported, defaulting to '%s' for backward compatibility", serviceMesh, defaultServiceMesh)
+		serviceMesh = defaultServiceMesh
+	}
+
+	proxywasm.LogDebugf("Running on service Mesh = %v", ret.serviceMesh)
+
+	return ret
+}
+
+func (ctx *pluginContext) getHostsToTraceCallBack(_, bodySize, _ int) {
+	if valid, err := isValidGetHostsToTraceResponse(); err != nil {
+		proxywasm.LogWarnf("failed to verify if response is valid: %v", err)
+		return
+	} else if !valid {
+		return
+	}
+
+	responseBody, err := proxywasm.GetHttpCallResponseBody(0, bodySize)
+	if err != nil {
+		proxywasm.LogWarnf("failed to get response body: %v", err)
+		return
+	}
+
+	proxywasm.LogDebugf("got response body: %v", string(responseBody))
+
+	hostsToTrace, err := getHostsToTrace(responseBody)
+	if err != nil {
+		proxywasm.LogWarnf("failed to extract hosts to trace from body: %v", err)
+		return
+	}
+
+	ctx.hostsToTrace = hostsToTrace
+	proxywasm.LogDebugf("New host list to trace was set")
+}
+
+// isValidGetHostsToTraceResponse Verifies the following
+// 1. Response status code is 200
+// 2. Response content-type is application/json
+func isValidGetHostsToTraceResponse() (bool, error) {
+	responseHeaders, err := proxywasm.GetHttpCallResponseHeaders()
+	if err != nil {
+		return false, fmt.Errorf("failed to get response headers: %v", err)
+	}
+
+	proxywasm.LogDebugf("Response Headers:")
+	for i, header := range responseHeaders {
+		proxywasm.LogDebugf("[%d]: %v=%v", i, header[0], header[1])
+		switch header[0] {
+		case statusCodePseudoHeaderName:
+			if header[1] != "200" {
+				proxywasm.LogWarnf("isValidGetHostsToTraceResponse: not a valid status code (%s)", header[1])
+				return false, nil
+			}
+		case contentTypeHeaderName:
+			if header[1] != "application/json" {
+				proxywasm.LogWarnf("isValidGetHostsToTraceResponse: not a valid content-type (%s)", header[1])
+				return false, nil
+			}
+		}
+	}
+
+	return true, nil
+}
+
+// getHostsToTrace helper function that received the callback response body (GET /api/hostsToTrace)
+// and extract from it the list of hosts to trace
+// swagger can be found in https://github.com/openclarity/trace-sampling-manager/blob/main/api/swagger.yaml
+func getHostsToTrace(responseBody []byte) (map[string]struct{}, error) {
+	var parser fastjson.Parser
+
+	parsedResponseBody, err := parser.Parse(string(responseBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse response body: %v", err)
+	}
+
+	hosts := parsedResponseBody.GetArray("hosts")
+
+	hostsToTrace := make(map[string]struct{})
+	for _, host := range hosts {
+		hostsToTrace[string(host.GetStringBytes())] = struct{}{}
+	}
+
+	return hostsToTrace, nil
+}
+
+// func (ctx *pluginContext) OnTick() {
+// 	ctx.callGetHostsToTrace()
+// }
+
+func (ctx *pluginContext) callGetHostsToTrace() {
+	hs := [][2]string{
+		{":method", "GET"}, {":authority", "apiclarity"}, {":path", "/api/hostsToTrace"}, {"accept", "*/*"},
+	}
+	proxywasm.LogDebugf("Retrieving hosts to trace from trace-sampling-manager")
+	if _, err := proxywasm.DispatchHttpCall("trace-sampling-manager", hs, nil, emptyTrailers,
+		httpCallTimeoutMs, ctx.getHostsToTraceCallBack); err != nil {
+		proxywasm.LogCriticalf("dispatch httpcall failed: %v", err)
+	}
+}
+
 /**
-* override
+ * override
  */
 func (ctx *TraceFilterContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) types.Action {
 	if ctx.skipStream {
@@ -203,6 +349,11 @@ func (ctx *TraceFilterContext) OnHttpRequestHeaders(numHeaders int, endOfStream 
 		proxywasm.LogErrorf("Failed to get host name and type: %v", err)
 	}
 
+	// if !ctx.shouldTrace() {
+	// 	ctx.skipStream = true
+	// 	return types.ActionContinue
+	// }
+
 	if ctx.Telemetry.Request.Path == "" {
 		path, err = proxywasm.GetHttpRequestHeader(":path")
 		if err != nil {
@@ -232,6 +383,11 @@ func (ctx *TraceFilterContext) OnHttpRequestHeaders(numHeaders int, endOfStream 
 	return types.ActionContinue
 }
 
+const MaxBodySize = 1000 * 1000
+
+/**
+ * override
+ */
 func (ctx *TraceFilterContext) OnHttpRequestBody(bodySize int, endOfStream bool) types.Action {
 	proxywasm.LogDebugf("OnHttpRequestBody: contextID: %v. rootContextID: %v, endOfStream: %v", ctx.contextID, ctx.rootContextID, endOfStream)
 	if ctx.shouldShortCircuitOnBody(bodySize, ctx.Telemetry.Request.Common.TruncatedBody) {
@@ -387,20 +543,6 @@ func (ctx *TraceFilterContext) OnHttpStreamDone() {
 	}
 }
 
-func (ctx *TraceFilterContext) shouldShortCircuitOnBody(bodySize int, truncatedBody bool) bool {
-	if ctx.skipStream {
-		return true
-	}
-	if bodySize == 0 {
-		return true
-	}
-	if truncatedBody {
-		return true
-	}
-
-	return false
-}
-
 func getPortFromAddress(address string) string {
 	spl := strings.Split(address, ":")
 	if len(spl) != 2 {
@@ -414,7 +556,6 @@ const jsonPayload string = `{"requestID":"%v","scheme":"%v","destinationAddress"
 
 const (
 	httpCallTimeoutMs = 15000
-	MaxBodySize       = 1000 * 1000
 )
 
 var emptyTrailers = [][2]string{}
@@ -473,8 +614,68 @@ func createJsonHeaders(headers []*Header) string {
 	return ret
 }
 
-func getDestinationNamespace(ctx *TraceFilterContext) (string, error) {
-	return "", nil
+func (ctx *TraceFilterContext) shouldShortCircuitOnBody(bodySize int, truncatedBody bool) bool {
+	if ctx.skipStream {
+		return true
+	}
+	if bodySize == 0 {
+		return true
+	}
+	if truncatedBody {
+		return true
+	}
+
+	return false
+}
+
+func getIstioDestinationNamespace(ctx *TraceFilterContext) (string, error) {
+	// catalogue;sock-shop;catalogue;latest;Kubernetes or catalogue;sock-shop;catalogue;latest
+	dstWorkload, err := proxywasm.GetProperty([]string{"upstream_host_metadata", "filter_metadata", "istio", "workload"})
+	if err != nil {
+		return "", fmt.Errorf("failed to get upstream_host_metadata: %v", err)
+	}
+	s := strings.Split(string(dstWorkload), ";")
+	if len(s) == 5 || len(s) == 4 {
+		return s[1], nil
+	}
+	return "", fmt.Errorf("destination namespace was not found")
+}
+
+func getKumaDestinationNamespace(ctx *TraceFilterContext) (string, error) {
+	dstNamespace, err := proxywasm.GetProperty([]string{"upstream_host_metadata", "filter_metadata", "envoy.lb", "k8s.kuma.io/namespace"})
+	if err != nil {
+		return "", fmt.Errorf("failed to get upstream_host_metadata: %v", err)
+	}
+	return string(dstNamespace), nil
+}
+
+func (ctx *TraceFilterContext) shouldTrace() bool {
+	// check if we have enough information to decide according to hosts to trace map
+	if !ctx.isHostFixed {
+		return true
+	}
+
+	if !ctx.traceSamplingEnabled {
+		return true
+	}
+
+	if ctx.destinationPort == "" {
+		proxywasm.LogWarn("Destination port is empty")
+		return true
+	}
+
+	_, foundInApiToTrace := ctx.hostsToTrace[ctx.Telemetry.Request.Host+":"+ctx.destinationPort]
+	// check if we should trace all hosts
+	_, shouldTraceAll := ctx.hostsToTrace["*"]
+
+	if !foundInApiToTrace && !shouldTraceAll {
+		proxywasm.LogDebugf("Host should not be traced. host=%v, port=%v, foundInApiToTrace=%v, shouldTraceAll=%v",
+			ctx.Telemetry.Request.Host, ctx.destinationPort, foundInApiToTrace, shouldTraceAll)
+		return false
+	}
+	proxywasm.LogDebugf("Host should be traced. host=%v, port=%v, foundInApiToTrace=%v, shouldTraceAll=%v",
+		ctx.Telemetry.Request.Host, ctx.destinationPort, foundInApiToTrace, shouldTraceAll)
+	return true
 }
 
 // fixHostname will return only hostname without scheme and port

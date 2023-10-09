@@ -1,0 +1,16 @@
+apiVersion: extensions.istio.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: api-wasm-filter
+  namespace: httpbin-ns
+spec:
+  # selector:
+  #   matchLabels:
+  #     app: httpbin
+  url: file:///opt/wasm/api_wasm.wasm
+  # sha256: 1ef0c9a92b0420cf25f7fe5d481b231464bc88f486ca3b9c83ed5cc21d2f6210
+  phase: UNSPECIFIED_PHASE
+  # pluginConfig:
+  #   openid_server: authn
+  #   openid_realm: ingress
+
